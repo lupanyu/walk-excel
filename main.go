@@ -14,7 +14,8 @@ var out = "提示信息...\r\n1.按按顺序输入sheet1-sheet5对应的费用\r
 var result *walk.TextEdit
 var mainWindow *walk.MainWindow
 var inEdits [5]*walk.LineEdit
-
+var btnMod *walk.PushButton
+var btnVolume *walk.PushButton
 var VolumeData = map[string]float64{}
 
 func main() {
@@ -50,6 +51,7 @@ func main() {
 			},
 
 			PushButton{
+				AssignTo:  &btnVolume,
 				Text:      "选择体积excel文件",
 				OnClicked: loadVolume,
 				MaxSize:   buttonSize,
@@ -60,12 +62,32 @@ func main() {
 				MaxSize:   buttonSize,
 			},
 			PushButton{
-				Text:      "生成excel",
-				OnClicked: loadBP,
+				AssignTo:  &btnMod,
+				Text:      "切换为UPS方式计算",
+				OnClicked: convertMode,
 				MaxSize:   buttonSize,
 			},
 		},
 	}.Run()
+}
+
+var upsMode bool = false
+
+// 切换数据计算方式
+func convertMode() {
+	if upsMode {
+		upsMode = false
+		btnMod.SetText("切换成UPS方式计算")
+		btnVolume.SetEnabled(true)
+		out = "当前是卡车方式计算"
+	} else {
+		upsMode = true
+		btnMod.SetText("切换成卡车方式计算")
+		btnVolume.SetEnabled(false)
+		out = "当前是UPS方式计算"
+	}
+	result.SetText(out)
+
 }
 
 // 加载体积数据
@@ -144,11 +166,128 @@ func loadBP() {
 	fmt.Println("工作表数量:", len(sheetNames))
 	type sheetData struct {
 		allVolume float64 // 求和算出总体积
+		counts    int     // 数量
 		price     float64 // 计算单位体积的费用
 		totalCost float64 // 输入总费用
 		sheetName string
 		rows      []struct {
 			sku       string
+			nums      int     // 数量
+			boxNum    int     // 箱数
+			volume    float64 // 每箱体积
+			sumVolume float64 // 总体积
+			cost      float64 // 当前sku的总费用
+		}
+	}
+	allSheetData := []sheetData{}
+
+	if upsMode {
+		calcUpsMode(sheetNames, f, allSheetData)
+	} else {
+		calcTruckMode(sheetNames, f)
+	}
+
+	// 遍历每个工作表
+	//for sheetIndex, sheetName := range sheetNames {
+	//	fmt.Println("\n工作表名称:", sheetName)
+	//	newsheetData := sheetData{
+	//		sheetName: sheetName,
+	//	}
+	//	newsheetData.allVolume = 0
+	//	// 获取工作表名称里的所有行
+	//	rows, err := f.GetRows(sheetName)
+	//	if err != nil {
+	//		fmt.Println("获取行数据出错:", err)
+	//		return
+	//	}
+	//	log.Println("------\n", rows)
+	//	for _, row := range rows[5:] {
+	//		if row[4] == "" {
+	//			continue
+	//		}
+	//		boxNum, _ := strconv.ParseFloat(row[7], 64)
+	//		newsheetData.rows = append(newsheetData.rows, struct {
+	//			sku       string
+	//			nums      int     // 数量
+	//			boxNum    int     // 箱数
+	//			volume    float64 // 每箱体积
+	//			sumVolume float64 // 总体积
+	//			cost      float64 // 当前sku的总费用
+	//		}{
+	//			sku:       row[4],
+	//			boxNum:    int(boxNum),
+	//			volume:    VolumeData[row[4]],
+	//			sumVolume: VolumeData[row[4]] * boxNum,
+	//		})
+	//		// log.Printf("sku: %s ,箱数：%s,总数量: %s,单位体积:%f，总体积: %f", row[4], row[7], row[9], VolumeData[row[4]], VolumeData[row[4]]*boxNum)
+	//		newsheetData.allVolume += VolumeData[row[4]] * boxNum
+	//	}
+	//	logData := fmt.Sprintf("统计出sheet %s: 总方数是:%f\r\n", sheetName, newsheetData.allVolume)
+	//	out += logData
+	//	log.Println(logData)
+	//	var price float64 // 单位体积的费用
+	//	// 根据输入的数字计算出单位体积的费用
+	//	if inEdits[sheetIndex].Text() != "" {
+	//		allPrice, _ := strconv.ParseFloat(inEdits[0].Text(), 64)
+	//		log.Println("allPrice", allPrice, "输入的数据是：", inEdits[0].Text())
+	//		price = allPrice / newsheetData.allVolume
+	//		newsheetData.price = price
+	//		logData = fmt.Sprintf("sheet %s: 单位体积费用是:%f\r\n", sheetName, newsheetData.price)
+	//		out += logData
+	//		log.Println(logData)
+	//	}
+	//	// 计算出每个sku花费
+	//	for n, row := range newsheetData.rows {
+	//		row.cost = row.volume * newsheetData.price * float64(row.boxNum)
+	//		log.Printf("sku: %s,箱数：%d,总数量: %f,单位体积:%f，总体积: %f,总费用: %f\r\n", row.sku, row.boxNum, row.sumVolume, row.volume, row.sumVolume, row.cost)
+	//		newsheetData.rows[n] = row
+	//	}
+	//	result.SetText(out)
+	//	allSheetData = append(allSheetData, newsheetData)
+	//}
+	//log.Println("-----------------allSheetData", allSheetData)
+	// 创建一个新的 Excel 文件
+	newFile := excelize.NewFile()
+	defer newFile.Close()
+	for _, newFileData := range allSheetData {
+		// 创建一个新的工作表
+		newFile.NewSheet(newFileData.sheetName)
+		newSheetName := newFileData.sheetName
+		newFile.SetCellValue(newSheetName, "A1", "sku")
+		newFile.SetCellValue(newSheetName, "B1", "箱数")
+		newFile.SetCellValue(newSheetName, "C1", "单位体积")
+		newFile.SetCellValue(newSheetName, "D1", "总体积")
+		newFile.SetCellValue(newSheetName, "E1", "总费用")
+		for i, row := range newFileData.rows {
+			newFile.SetCellValue(newSheetName, fmt.Sprintf("A%d", i+2), row.sku)
+			newFile.SetCellValue(newSheetName, fmt.Sprintf("B%d", i+2), row.boxNum)
+			newFile.SetCellValue(newSheetName, fmt.Sprintf("C%d", i+2), row.volume)
+			newFile.SetCellValue(newSheetName, fmt.Sprintf("D%d", i+2), row.sumVolume)
+			newFile.SetCellValue(newSheetName, fmt.Sprintf("E%d", i+2), row.cost)
+		}
+	}
+	newFile.SetActiveSheet(0)
+	fileName := time.Now().Format("20060102-150405") + ".xlsx"
+	if err := newFile.SaveAs(fileName); err != nil {
+		log.Println(err)
+	}
+	out += fmt.Sprintf("生成文件%s成功\r\n", fileName)
+	result.SetText(out)
+	log.Println(allSheetData)
+}
+
+// 计算卡车方式费用
+func calcTruckMode(sheetNames []string) {
+	fmt.Println("工作表数量:", len(sheetNames))
+	type sheetData struct {
+		allVolume float64 // 求和算出总体积
+		counts    int     // 数量
+		price     float64 // 计算单位体积的费用
+		totalCost float64 // 输入总费用
+		sheetName string
+		rows      []struct {
+			sku       string
+			nums      int     // 数量
 			boxNum    int     // 箱数
 			volume    float64 // 每箱体积
 			sumVolume float64 // 总体积
@@ -177,10 +316,11 @@ func loadBP() {
 			boxNum, _ := strconv.ParseFloat(row[7], 64)
 			newsheetData.rows = append(newsheetData.rows, struct {
 				sku       string
-				boxNum    int
-				volume    float64
-				sumVolume float64
-				cost      float64
+				nums      int     // 数量
+				boxNum    int     // 箱数
+				volume    float64 // 每箱体积
+				sumVolume float64 // 总体积
+				cost      float64 // 当前sku的总费用
 			}{
 				sku:       row[4],
 				boxNum:    int(boxNum),
@@ -214,32 +354,4 @@ func loadBP() {
 		allSheetData = append(allSheetData, newsheetData)
 	}
 	log.Println("-----------------allSheetData", allSheetData)
-	// 创建一个新的 Excel 文件
-	newFile := excelize.NewFile()
-	defer newFile.Close()
-	for _, newFileData := range allSheetData {
-		// 创建一个新的工作表
-		newFile.NewSheet(newFileData.sheetName)
-		newSheetName := newFileData.sheetName
-		newFile.SetCellValue(newSheetName, "A1", "sku")
-		newFile.SetCellValue(newSheetName, "B1", "箱数")
-		newFile.SetCellValue(newSheetName, "C1", "单位体积")
-		newFile.SetCellValue(newSheetName, "D1", "总体积")
-		newFile.SetCellValue(newSheetName, "E1", "总费用")
-		for i, row := range newFileData.rows {
-			newFile.SetCellValue(newSheetName, fmt.Sprintf("A%d", i+2), row.sku)
-			newFile.SetCellValue(newSheetName, fmt.Sprintf("B%d", i+2), row.boxNum)
-			newFile.SetCellValue(newSheetName, fmt.Sprintf("C%d", i+2), row.volume)
-			newFile.SetCellValue(newSheetName, fmt.Sprintf("D%d", i+2), row.sumVolume)
-			newFile.SetCellValue(newSheetName, fmt.Sprintf("E%d", i+2), row.cost)
-		}
-	}
-	newFile.SetActiveSheet(0)
-	fileName := time.Now().Format("20060102-150405") + ".xlsx"
-	if err := newFile.SaveAs(fileName); err != nil {
-		log.Println(err)
-	}
-	out += fmt.Sprintf("生成文件%s成功\r\n", fileName)
-	result.SetText(out)
-	log.Println(allSheetData)
 }
